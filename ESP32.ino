@@ -11,16 +11,19 @@
 
 
 //--------------------- Wifi -----------------
+//Creates ESP32 WiFi access point and web server
 const char* ssid = "1881Institute";
 const char* password = "FigureItOut!";
 WebServer server(80);
 
 //----------nRF24L01------------
+//Radio pins and address
 constexpr uint8_t CE_PIN = 4;
 constexpr uint8_t CSN_PIN = 2;
 const uint8_t radioAddress[6] = "Servo";
 RF24 radio(CE_PIN, CSN_PIN);
 
+//Data received from transmitter
 struct ServoCommand {
   uint8_t mouthAngle;
   uint8_t headAngle;
@@ -28,55 +31,59 @@ struct ServoCommand {
 ServoCommand command;
 
 
-//----------Servo Function------------
+//-------------------------Servos---------------------------------
 constexpr uint8_t MOUTH_SERVO_PIN = 14;
 constexpr uint8_t HEAD_SERVO_PIN = 27;
 
 Servo myServo;
 Servo headServo;
 
+//Mouth movement limits
 constexpr int MOUTH_OPEN = 120;
 constexpr int MOUTH_CLOSED = 80;
 
+//Head movement limits
 constexpr int HEAD_LEFT = 45;
 constexpr int HEAD_CENTER = 90;
 constexpr int HEAD_RIGHT = 135;
 
-
-
-
-
+//Current servo positions
 int currentHeadAngle = HEAD_CENTER;
 int currentMouthAngle = MOUTH_CLOSED;
 
 unsigned long lastRadioMessage = 0;
 
 
-//--------Bluetooth
+//--------Bluetooth Audio-----------------
+//Bluetooth speaker connection
 BluetoothA2DPSource a2dp_source;
 
-//send silence when nothing is playing so bluetooth connection wont stop
+//Tracks audio playback
 volatile bool audioPlaying = false;
 volatile size_t audioPosition = 0;
 
+//Sends audio to Bluetooth speaker
 int32_t getAudioData(uint8_t* data, int32_t byteCount){
   if (byteCount <= 0){
     return 0;
   }
+  //Send silence when audio is not playing
   if (!audioPlaying){
     memset(data, 0, byteCount);
     return byteCount;
   }
+  //Find remaining audio data
   size_t remaining = BERT_AUDIO_SIZE - audioPosition;
   size_t toCopy = (remaining < static_cast<size_t>(byteCount))
                     ? remaining
                     :static_cast<size_t>(byteCount);
+  //Copy audio into Bluetooth buffer
   if (toCopy > 0) {
     memcpy_P(data, BERT_AUDIO + audioPosition, toCopy);
     audioPosition += toCopy;
   }
 
-  //if clip ends before Bluetooth buffer is full, fill with silence
+  //Stop playback when audio finishes
   if (toCopy < static_cast<size_t>(byteCount)){
     memset(data + toCopy, 0, byteCount - toCopy);
     audioPlaying = false;
@@ -84,23 +91,26 @@ int32_t getAudioData(uint8_t* data, int32_t byteCount){
   }
   return byteCount;
 }
+//Starts audio from beginning
 void playBertAudio(){
   //restart from begininng each time button is pressed
   audioPosition = 0;
   audioPlaying = true;
   Serial.println("Playing audio...");
 }
-
+//--------------------------Servo Functions----------------------------
+//Moves mouth servo
 void setMouthAngle(int angle){
   angle = constrain(angle, MOUTH_CLOSED, MOUTH_OPEN);
-
+  //Keep mouth within limits
   if(abs(angle - currentMouthAngle) >= 2){
     currentMouthAngle = angle;
     myServo.write(currentMouthAngle);
   }
 }
-
+//Moves head servo
 void setHeadAngle(int angle){
+  //Keep head within limits
   angle = constrain(angle, HEAD_LEFT, HEAD_RIGHT);
 
   if(abs(angle - currentHeadAngle) >= 2){
@@ -108,23 +118,24 @@ void setHeadAngle(int angle){
     headServo.write(currentHeadAngle);
   }
 }
-
+//Opens mouth
 void mouthOpen(){
     setMouthAngle(MOUTH_OPEN);
     delay(15);
   }
-
+//Closes mouth
 void mouthClosed(){
   setMouthAngle(MOUTH_CLOSED);
   delay(15);
 }
-//mouth motion when audio plays
+//Tracks previous mouth position
 bool mouthWasClosed = true;
 
 
 
 
-//-----------Web Page-------------
+//--------------------------Web Page-------------------------------------------------
+//Control page displayed on phone/computer
 const char PAGE[] PROGMEM = 
 R"rawliteral(
   <!DOCTYPE html>
@@ -221,20 +232,25 @@ content="width=device-width, initial-scale=1">
 )rawliteral";
 
 //--------------ESP32 web handlers-------------
+
+//Loads control webpage
 void handleRoot() {
   server.send(200, "text/html", PAGE);
 }
 
+//Opens mouth from webpage
 void handleOpen() {
   mouthOpen();
   server.send(200, "text/plain", "Mouth Open");
 }
 
+//Closes mouth from webpage
 void handleClosed() {
   mouthClosed();
   server.send(200, "text/plain", "Close Mouth");
 }
 
+//Plays audio from webpage
 void handleAudio() {
   playBertAudio();
   server.send(200, "text/plain", "playing audio");
@@ -242,65 +258,75 @@ void handleAudio() {
 
 
 
-//-----------------
+//----------------------Setup----------------------------------------------
 void setup() {
+  //Start serial monitor
   Serial.begin(115200);
 
   //Allow the ESP32 to allocate PWM timers
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
 
+  //Set servo frequency
   myServo.setPeriodHertz(50);
   headServo.setPeriodHertz(50);
 
 
-  //Standard servo pulse range
+  //Attach servos
   myServo.attach(MOUTH_SERVO_PIN, 500, 2500);
   headServo.attach(HEAD_SERVO_PIN, 500, 2500);
 
 
-  //Start centered
+  //Set starting positions
   myServo.write(MOUTH_CLOSED);
   headServo.write(HEAD_CENTER);
 
   delay(500);
 
-  //Wifi and server setup
+  //----------------------- WiFi Setup--------------------------
+  //Start ESP32 access point
   WiFi.softAP(ssid, password);
+
+  //Start webpage routes
   server.on("/", handleRoot);
   server.on("/open", handleOpen);
   server.on("/close", handleClosed);
   server.on("/talk", handleAudio);
 
+  //Start web server
   server.begin();
 
   Serial.print("Open: http://");
   Serial.println(WiFi.softAPIP());
 
+  //------------------------------- Radio Setup ---------------------------
+  //Start SPI and nRF24L01
   SPI.begin();
   if (!radio.begin()) {
     Serial.println("nRF24L01 was not detected.");
   } else {
 
-
+  //Configure radio
   radio.setPALevel(RF24_PA_LOW);
   radio.setDataRate(RF24_250KBPS);
   radio.setChannel(100);
 
-
+  //Listen for transmiter
   radio.openReadingPipe(1, radioAddress);
   radio.startListening();
-
 
   Serial.println("Servo receiver ready.");
 }
 lastRadioMessage = millis();
 
 //----------Bluetooth A2DP-----------------------------------
-//speaker must be on and in pairing mode
+//Automatically reconnect setup
 a2dp_source.set_auto_reconnect(true);
+
+//Set audio callback
 a2dp_source.set_data_callback(getAudioData);
 
+//Connect to Bluetooth Speaker
 Serial.println("Looking for Bluetooth speaker: Soundcore Flare");
 a2dp_source.start("Soundcore Flare");
 
@@ -309,18 +335,18 @@ Serial.println("Puppet receiver ready.");
 
 //----------Main Loop---------------------------------------------
 void loop() {
+  //Handle webpage commands
   server.handleClient();
-
+//-----------------------------Radio Commands----------------------
   if (radio.available()) {
-    // Read the newest packet if several packets are waiting.
+    // Read the newest transmitter command
     while (radio.available()) {
       radio.read(&command, sizeof(command));
     }
-    //Detect when the joystick starts opening the mouth
+    //Detect mouth opening
     bool mouthIsOpening = command.mouthAngle > (MOUTH_CLOSED + 8);
 
-    //Start audio once when mouth changes
-    //from closed to open
+    //Start audio once when mouth first opens
     if (mouthIsOpening && mouthWasClosed && !audioPlaying){
       playBertAudio();
       Serial.println("Mouth opened - starting Bert audio");
@@ -332,20 +358,13 @@ void loop() {
     //Joystick continues controlling the mouth
     setMouthAngle(command.mouthAngle);
 
-    //X axis continues controlling the head
+    //Joystick controls head
     setHeadAngle(command.headAngle);
 
     lastRadioMessage = millis();
   }
-  //
-  //int mouthAngle = map(command.angle, 0, 180, MOUTH_CLOSED, MOUTH_OPEN);
-  //setMouthAngle(mouthAngle);
-  //setHeadAngle(headAngle);
 
-  //lastRadioMessage = millis();
-
-  
-  
+  //Display servo positions 
   Serial.print("Mouth: ");
   Serial.println(currentMouthAngle);
   Serial.print("Head: ");
