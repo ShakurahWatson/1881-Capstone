@@ -370,7 +370,7 @@ void loop() {
   Serial.print("Head: ");
   Serial.println(currentHeadAngle);
 
-  }
+  
 }
 
 
